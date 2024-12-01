@@ -246,9 +246,7 @@ def test(epoch):
 
             inputs, targets = inputs.cuda(), targets.cuda()
 
-        print(2222)
         outputs = net(inputs)
-        print(1111)
         loss = criterion(outputs, targets)
         
         test_loss += loss.data
