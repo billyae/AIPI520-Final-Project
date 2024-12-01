@@ -3,10 +3,12 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 import argparse
+from torchvision import transforms
+
+# Local imports
 from src.data.data_loader import ReflexDataset
 from src.models.deep_learning import MultiLabelXrayClassifier
 from src.utils.evaluation import evaluate_model, plot_metrics
-from torchvision import transforms
 
 def main():
     parser = argparse.ArgumentParser(description='Train RefleX classification model')
