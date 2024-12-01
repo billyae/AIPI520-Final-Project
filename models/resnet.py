@@ -118,7 +118,7 @@ class PreActBottleneck(nn.Module):
 
 
 class ResNet(nn.Module):
-    def __init__(self, block, num_blocks, num_classes=10):
+    def __init__(self, block, num_blocks, num_classes=7):
         super(ResNet, self).__init__()
         self.in_planes = 64
 
@@ -158,6 +158,8 @@ class ResNet(nn.Module):
             out = self.linear(out)
         return out
 
+def ResNet10():
+    return ResNet(PreActBlock, [1,1,1,1])
 
 def ResNet18():
     return ResNet(PreActBlock, [2,2,2,2])
@@ -176,7 +178,7 @@ def ResNet152():
 
 
 def test():
-    net = ResNet18()
+    net = ResNet10()
     y = net(Variable(torch.randn(1,3,32,32)))
     print(y.size())
 

@@ -12,9 +12,40 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
+from torch.utils.data import Dataset
+from PIL import Image
+import pandas as pd
 
 import models
-from utils import progress_bar
+from utils_resnet import progress_bar
+
+# Load Dataset
+class ReflexDataset(Dataset):
+    def __init__(self, csv_file, img_dir, transform=None):
+        self.data = pd.read_csv(csv_file)  # Load the CSV file
+        self.img_dir = img_dir            # Path to the image directory
+        self.transform = transform        # Image transformations
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        # Get image file name and labels
+        img_name = os.path.join(self.img_dir, self.data.iloc[idx, 0])  # First column is the image name
+        image = Image.open(f"{img_name}.png").convert("RGB")  # Open the image
+        labels = self.data.iloc[idx, 1:].values.astype('float32')  # Remaining columns are labels
+
+        # Apply transformations if specified
+        if self.transform:
+            image = self.transform(image)
+
+        return image, labels
+    
+# Paths to data
+train_csv = "Reflex/labels_train.csv"
+test_csv = "Reflex/labels_test.csv"
+val_csv = "Reflex/labels_val.csv"
+img_dir = "Reflex/reflex_img_1024_inter_nearest"
 
 parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
 parser.add_argument('--lr', default=0.1, type=float, help='learning rate')
@@ -37,13 +68,16 @@ args = parser.parse_args()
 
 use_cuda = torch.cuda.is_available()
 
+torch.cuda.set_device(0)  # Set your desired GPU
+torch.backends.cudnn.benchmark = True
+
 best_acc = 0  # best test accuracy
 start_epoch = 0  # start from epoch 0 or last checkpoint epoch
 
 if args.seed != 0:
     torch.manual_seed(args.seed)
 
-# Data
+
 print('==> Preparing data..')
 if args.augment:
     # 创建了一个用于训练图像的数据预处理管道。该管道包含了以下四个步骤
@@ -55,6 +89,7 @@ if args.augment:
         transforms.Normalize((0.4914, 0.4822, 0.4465),
                              (0.2023, 0.1994, 0.2010)),
     ])
+
 else:
     # 不进行数据增强
     transform_train = transforms.Compose([
@@ -69,18 +104,18 @@ transform_test = transforms.Compose([
     transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
 ])
 
-trainset = datasets.CIFAR10(root='~/data', train=True, download=False,
-                            transform=transform_train)
+trainset = ReflexDataset(csv_file=train_csv, img_dir=img_dir, transform=transform_train)
+
 trainloader = torch.utils.data.DataLoader(trainset,
                                           batch_size=args.batch_size,
                                           shuffle=True,
-                                          num_workers=8 # 数据加载子进程数，加快加载速度
+                                          num_workers=0 # 数据加载子进程数，加快加载速度
                                           )
 
-testset = datasets.CIFAR10(root='~/data', train=False, download=False,
-                           transform=transform_test)
-testloader = torch.utils.data.DataLoader(testset, batch_size=100,
-                                         shuffle=False, num_workers=8)
+testset = ReflexDataset(csv_file=test_csv, img_dir=img_dir, transform=transform_test)
+
+testloader = torch.utils.data.DataLoader(testset, batch_size=args.batch_size,
+                                         shuffle=False, num_workers=0)
 
 
 # Model
@@ -108,6 +143,7 @@ logname = ('results/log_' + net.__class__.__name__ + '_' + args.name + '_'
            + str(args.seed) + '.csv')
 
 if use_cuda:
+ 
     # 模型转移到GPU上
     net.cuda()
     # 多卡训练
@@ -118,7 +154,7 @@ if use_cuda:
     print('Using CUDA..')
 
 # 损失函数
-criterion = nn.CrossEntropyLoss()
+criterion = torch.nn.BCEWithLogitsLoss()
 # 优化器
 optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=0.9,
                       weight_decay=args.decay)
@@ -160,6 +196,7 @@ def train(epoch):
     correct = 0
     total = 0
     for batch_idx, (inputs, targets) in enumerate(trainloader):
+
         # 数据转移到GPU
         if use_cuda:
             inputs, targets = inputs.cuda(), targets.cuda()
@@ -167,15 +204,18 @@ def train(epoch):
         # 得到混合后的输入数据和label，权重等
         inputs, targets_a, targets_b, lam = mixup_data(inputs, targets,
                                                        args.alpha, use_cuda)
-        # 将混合后的输入数据和标签包装成 PyTorch 中的 Variable 对象，以便在模型中使用（但是Variable已经被弃用了）
-        inputs, targets_a, targets_b = map(Variable, (inputs,
-                                                      targets_a, targets_b))
+       
         outputs = net(inputs)
+
         # mixup下的损失函数
         loss = mixup_criterion(criterion, outputs, targets_a, targets_b, lam)
+
+        
         train_loss += loss.data
-        _, predicted = torch.max(outputs.data, 1)
+        predicted = (torch.sigmoid(outputs) > 0.5).float()  # Convert logits to binary predictions (128, 7)
+
         total += targets.size(0)
+
         correct += (lam * predicted.eq(targets_a.data).cpu().sum().float()
                     + (1 - lam) * predicted.eq(targets_b.data).cpu().sum().float())
 
@@ -187,6 +227,9 @@ def train(epoch):
                      'Loss: %.3f | Reg: %.5f | Acc: %.3f%% (%d/%d)'
                      % (train_loss/(batch_idx+1), reg_loss/(batch_idx+1),
                         100.*correct/total, correct, total))
+        
+        torch.cuda.empty_cache()
+
     return (train_loss/batch_idx, reg_loss/batch_idx, 100.*correct/total)
 
 
@@ -197,14 +240,20 @@ def test(epoch):
     correct = 0
     total = 0
     for batch_idx, (inputs, targets) in enumerate(testloader):
-        if use_cuda:
-            inputs, targets = inputs.cuda(), targets.cuda()
-        inputs, targets = Variable(inputs, volatile=True), Variable(targets)
-        outputs = net(inputs)
-        loss = criterion(outputs, targets)
 
+        
+        if use_cuda:
+
+            inputs, targets = inputs.cuda(), targets.cuda()
+
+        print(2222)
+        outputs = net(inputs)
+        print(1111)
+        loss = criterion(outputs, targets)
+        
         test_loss += loss.data
-        _, predicted = torch.max(outputs.data, 1)
+        predicted = (torch.sigmoid(outputs) > 0.5).float()  # Convert logits to binary predictions (128, 7)
+
         total += targets.size(0)
         correct += predicted.eq(targets.data).cpu().sum()
 
@@ -245,19 +294,22 @@ def adjust_learning_rate(optimizer, epoch):
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
+if __name__ == '__main__':
 
-# 用csv记录
-if not os.path.exists(logname):
-    with open(logname, 'w') as logfile:
-        logwriter = csv.writer(logfile, delimiter=',')
-        logwriter.writerow(['epoch', 'train loss', 'reg loss', 'train acc',
-                            'test loss', 'test acc'])
+    # 用csv记录
+    if not os.path.exists(logname):
+        with open(logname, 'w') as logfile:
+            logwriter = csv.writer(logfile, delimiter=',')
+            logwriter.writerow(['epoch', 'train loss', 'reg loss', 'train acc',
+                                'test loss', 'test acc'])
 
-for epoch in range(start_epoch, args.epoch):
-    train_loss, reg_loss, train_acc = train(epoch)
-    test_loss, test_acc = test(epoch)
-    adjust_learning_rate(optimizer, epoch)
-    with open(logname, 'a') as logfile:
-        logwriter = csv.writer(logfile, delimiter=',')
-        logwriter.writerow([epoch, train_loss, reg_loss, train_acc, test_loss,
-                            test_acc])
+    for epoch in range(start_epoch, args.epoch):
+        train_loss, reg_loss, train_acc = train(epoch)
+        test_loss, test_acc = test(epoch)
+        adjust_learning_rate(optimizer, epoch)
+        with open(logname, 'a') as logfile:
+            logwriter = csv.writer(logfile, delimiter=',')
+            logwriter.writerow([epoch, train_loss, reg_loss, train_acc, test_loss,
+                                test_acc])
+
+

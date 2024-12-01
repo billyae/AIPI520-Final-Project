@@ -6,7 +6,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.init as init
-
+import platform
 
 def get_mean_and_std(dataset):
     '''计算出数据集的均值和标准差.'''
@@ -37,8 +37,14 @@ def init_params(net):
             if m.bias:
                 init.constant(m.bias, 0)
 
+if platform.system() == "Windows":
+    term_width = 80  # Default terminal width for Windows
+else:
+    try:
+        _, term_width = os.popen('stty size', 'r').read().split()
+    except ValueError:
+        term_width = 80
 
-_, term_width = os.popen('stty size', 'r').read().split()
 
 term_width = int(term_width)
 
